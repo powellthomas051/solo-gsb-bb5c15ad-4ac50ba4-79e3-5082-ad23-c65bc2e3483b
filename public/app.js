@@ -1353,6 +1353,8 @@ paperAddBtn.addEventListener('click', () => {
   if (paperTableBody.querySelectorAll('tr.paper-row').length >= PAPER_LIMIT) return;
   addPaperRow();
   syncPaperRowsFromDom();
+  // 新增规格同样属于纸张变化：作废在途裁切响应，已展示的报价/裁切方案标记过期
+  markQuoteStale();
 });
 
 paperResetBtn.addEventListener('click', () => {
@@ -1613,6 +1615,7 @@ const cuttingRequiredInput = document.getElementById('cutting-required');
 const cuttingCalcBtn = document.getElementById('cutting-calc-btn');
 const cuttingStatusEl = document.getElementById('cutting-status');
 const cuttingResultEl = document.getElementById('cutting-result');
+const cuttingStaleHintEl = document.getElementById('cutting-stale-hint');
 const cuttingDownloadBtn = document.getElementById('cutting-download-btn');
 
 let cuttingData = null;
@@ -1628,11 +1631,14 @@ function clearCutting() {
   cuttingBoxEl.hidden = true;
   cuttingResultEl.hidden = true;
   cuttingResultEl.innerHTML = '';
+  cuttingResultEl.classList.remove('stale');
+  cuttingStaleHintEl.hidden = true;
   cuttingStatusEl.textContent = '';
   cuttingStatusEl.className = 'status';
   cuttingCalcBtn.disabled = false;
   cuttingCalcBtn.dataset.stale = '';
   cuttingCalcBtn.classList.remove('stale');
+  cuttingDownloadBtn.disabled = true;
   // 每次重新选择文件/拼版都回到默认 1 个印张，避免沿用上一份文档的数量
   if (document.activeElement !== cuttingRequiredInput) {
     cuttingRequiredInput.value = '1';
@@ -1667,13 +1673,30 @@ cuttingRequiredInput.addEventListener('input', () => {
 });
 
 /**
- * 纸张规格或印张数变化后标记方案过期（不自动请求，与报价交互保持一致）。
+ * 纸张规格（编辑/增删/重置）或所需印张数变化后：
+ * - 作废在途裁切请求（递增标识）：旧参数响应的成功、失败与收尾更新一律被忽略，
+ *   不再回填旧输入对应的刀线、边料与用纸量，也不覆盖按钮状态；
+ * - 已展示的方案按修改前输入算出：标明过期并暂停下载；
+ * - 恢复「计算裁切方案」可用（在途请求的收尾不会再恢复按钮），
+ *   只有按当前输入重新计算成功才展示新方案并恢复下载。
  */
 function markCuttingStale() {
-  if (lastPlan && cuttingData && !cuttingCalcBtn.dataset.stale) {
-    cuttingCalcBtn.dataset.stale = '1';
-    cuttingCalcBtn.classList.add('stale');
-    setCuttingStatus('纸张规格或印张数已修改，点击「计算裁切方案」更新。', 'info');
+  cuttingReqToken += 1;
+  cuttingCalcBtn.disabled = false;
+  if (!lastPlan) return;
+  if (cuttingData) {
+    if (!cuttingCalcBtn.dataset.stale) {
+      cuttingCalcBtn.dataset.stale = '1';
+      cuttingCalcBtn.classList.add('stale');
+    }
+    cuttingResultEl.classList.add('stale');
+    cuttingStaleHintEl.hidden = false;
+    cuttingDownloadBtn.disabled = true;
+    setCuttingStatus('纸张规格或所需印张数已修改，当前方案已过期并暂停下载；'
+      + '点击「计算裁切方案」按当前输入重新计算。', 'info');
+  } else if (!cuttingBoxEl.hidden) {
+    // 首次计算在途或尚无结果：在途响应将被丢弃，提示按当前输入重新计算
+    setCuttingStatus('纸张规格或所需印张数已修改，点击「计算裁切方案」按当前输入重新计算。', 'info');
   }
 }
 
@@ -1683,9 +1706,13 @@ async function requestCutting(plan) {
   cuttingBoxEl.hidden = false;
   cuttingResultEl.hidden = true;
   cuttingResultEl.innerHTML = '';
+  cuttingResultEl.classList.remove('stale');
+  cuttingStaleHintEl.hidden = true;
   cuttingCalcBtn.disabled = true;
   cuttingCalcBtn.dataset.stale = '';
   cuttingCalcBtn.classList.remove('stale');
+  // 重新计算期间暂停下载：只有按当前输入计算成功后才恢复
+  cuttingDownloadBtn.disabled = true;
 
   const requiredSheets = readRequiredSheets();
   if (requiredSheets === null) {
@@ -1726,9 +1753,10 @@ async function requestCutting(plan) {
       throw new Error(message);
     }
     const data = await resp.json();
-    if (req !== cuttingReqToken) return; // 已换稿或已发起新计算：丢弃旧结果
+    if (req !== cuttingReqToken) return; // 已换稿、输入已改或已发起新计算：丢弃旧结果
     cuttingData = data;
     renderCuttingResult();
+    cuttingDownloadBtn.disabled = false; // 按当前输入计算成功：恢复下载
     if (cuttingData.feasible) {
       const rec = cuttingData.options.find((o) => o.index === cuttingData.recommended.index);
       setCuttingStatus(
@@ -2024,7 +2052,8 @@ function buildCutOrder(opt) {
 }
 
 cuttingDownloadBtn.addEventListener('click', () => {
-  if (!cuttingData) return;
+  // 方案过期（输入已改）时下载按钮已禁用；此处再兜底，确保不导出旧参数的刀线与用纸量
+  if (!cuttingData || cuttingCalcBtn.dataset.stale) return;
   const json = JSON.stringify(cuttingData, null, 2);
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
   const url = URL.createObjectURL(blob);

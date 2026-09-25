@@ -289,7 +289,7 @@
           <h3>批量裁切下料</h3>
           <div class="cutting-head-actions">
             <button id="cutting-calc-btn" class="btn small secondary" type="button">计算裁切方案</button>
-            <button id="cutting-download-btn" class="btn small success" type="button">下载裁切 JSON</button>
+            <button id="cutting-download-btn" class="btn small success" type="button" disabled>下载裁切 JSON</button>
           </div>
         </div>
         <label class="cutting-count-field">
@@ -298,6 +298,9 @@
           <span class="option-hint">1～1000000 的整数；按拼版实际输出印张尺寸在每种原纸上以直线贯通裁切排料（印张可旋转 90°）</span>
         </label>
         <p id="cutting-status" class="status" role="status"></p>
+        <p id="cutting-stale-hint" class="cutting-stale-hint" hidden>
+          以下方案按修改前的输入计算，已过期：刀线、边料与用纸量暂不适用，下载已暂停。
+        </p>
         <div id="cutting-result" class="cutting-result" hidden></div>
       </div>
 

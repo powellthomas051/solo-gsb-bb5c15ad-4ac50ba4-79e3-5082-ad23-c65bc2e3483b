@@ -806,6 +806,16 @@ main {
   font-size: 14px;
 }
 .cutting-count-field input.invalid { border-color: var(--danger); background: #fef2f2; }
+.cutting-stale-hint {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 13px;
+}
+.cutting-result.stale { opacity: 0.55; }
 .cutting-layout {
   margin: 0 0 10px;
   font-size: 13px;
