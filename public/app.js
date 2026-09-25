@@ -1353,6 +1353,8 @@ paperAddBtn.addEventListener('click', () => {
   if (paperTableBody.querySelectorAll('tr.paper-row').length >= PAPER_LIMIT) return;
   addPaperRow();
   syncPaperRowsFromDom();
+  // 新增纸张同样属于规格变更：已展示的报价/裁切方案与在途裁切响应一并失效
+  markQuoteStale();
 });
 
 paperResetBtn.addEventListener('click', () => {
@@ -1396,7 +1398,7 @@ function markQuoteStale() {
     quoteStatusEl.textContent = '纸张规格已修改，点击「按当前纸张重新报价」更新。';
     quoteStatusEl.className = 'status info';
   }
-  // 裁切模块复用同一套纸张规格，一并标记为需重新计算
+  // 裁切模块复用同一套纸张规格：一并作废在途裁切响应并把已展示方案标记过期
   if (typeof markCuttingStale === 'function') markCuttingStale();
 }
 
@@ -1616,6 +1618,9 @@ const cuttingResultEl = document.getElementById('cutting-result');
 const cuttingDownloadBtn = document.getElementById('cutting-download-btn');
 
 let cuttingData = null;
+// 裁切计算在途标记：输入变更时据此判断是否有待作废的在途请求
+// （在途请求被作废后，其成功、失败与收尾更新都会被忽略，不再回填旧参数方案）
+let cuttingBusy = false;
 
 function setCuttingStatus(text, kind) {
   cuttingStatusEl.textContent = text || '';
@@ -1624,15 +1629,19 @@ function setCuttingStatus(text, kind) {
 
 function clearCutting() {
   cuttingReqToken += 1; // 作废在途裁切请求，旧稿裁切结果不再回填
+  cuttingBusy = false;
   cuttingData = null;
   cuttingBoxEl.hidden = true;
   cuttingResultEl.hidden = true;
   cuttingResultEl.innerHTML = '';
+  cuttingResultEl.classList.remove('stale');
   cuttingStatusEl.textContent = '';
   cuttingStatusEl.className = 'status';
   cuttingCalcBtn.disabled = false;
   cuttingCalcBtn.dataset.stale = '';
   cuttingCalcBtn.classList.remove('stale');
+  // 无有效方案时下载保持停用：只有按当前输入计算成功才恢复下载
+  cuttingDownloadBtn.disabled = true;
   // 每次重新选择文件/拼版都回到默认 1 个印张，避免沿用上一份文档的数量
   if (document.activeElement !== cuttingRequiredInput) {
     cuttingRequiredInput.value = '1';
@@ -1667,44 +1676,76 @@ cuttingRequiredInput.addEventListener('input', () => {
 });
 
 /**
- * 纸张规格或印张数变化后标记方案过期（不自动请求，与报价交互保持一致）。
+ * 纸张规格（编辑/增删/重置）或所需印张数变化后：
+ * - 作废在途裁切请求：旧参数的响应返回时其成功、失败与收尾更新一律被忽略，
+ *   不再回填旧方案、不覆盖新状态；
+ * - 已展示的方案标明过期（结果区加注横幅并置灰）并暂停下载；
+ * - 提示按当前输入重新计算，只有重新计算成功才展示新方案并恢复下载。
  */
 function markCuttingStale() {
-  if (lastPlan && cuttingData && !cuttingCalcBtn.dataset.stale) {
+  // 输入已变，在途响应不再可信：递增标识使旧请求回到页面时被丢弃
+  cuttingReqToken += 1;
+  const wasBusy = cuttingBusy;
+  cuttingBusy = false;
+  if (!lastPlan || cuttingBoxEl.hidden) return;
+  // 在途请求被作废后其收尾不会再恢复按钮，这里直接恢复计算入口
+  cuttingCalcBtn.disabled = false;
+  // 已展示的方案保留供对照，但标明过期并暂停下载
+  if (cuttingData) {
+    cuttingResultEl.classList.add('stale');
+    if (!cuttingResultEl.querySelector('.cutting-stale-banner')) {
+      const banner = document.createElement('div');
+      banner.className = 'cutting-stale-banner';
+      banner.textContent = '纸张规格或所需印张数已修改：以下方案按旧输入计算，已过期，'
+        + '下载已暂停；请点击「计算裁切方案」按当前输入重新计算。';
+      cuttingResultEl.prepend(banner);
+    }
+    cuttingDownloadBtn.disabled = true;
+  }
+  if ((cuttingData || wasBusy) && !cuttingCalcBtn.dataset.stale) {
     cuttingCalcBtn.dataset.stale = '1';
     cuttingCalcBtn.classList.add('stale');
-    setCuttingStatus('纸张规格或印张数已修改，点击「计算裁切方案」更新。', 'info');
+    setCuttingStatus('纸张规格或所需印张数已修改，当前裁切方案已过期，'
+      + '点击「计算裁切方案」按当前输入重新计算。', 'info');
   }
 }
 
 async function requestCutting(plan) {
   // 每次计算都使上一次裁切请求失效：换稿/重新拼版/重新计算后，旧结果不再回填
   const req = ++cuttingReqToken;
+  cuttingBusy = true;
   cuttingBoxEl.hidden = false;
   cuttingResultEl.hidden = true;
   cuttingResultEl.innerHTML = '';
+  cuttingResultEl.classList.remove('stale');
   cuttingCalcBtn.disabled = true;
   cuttingCalcBtn.dataset.stale = '';
   cuttingCalcBtn.classList.remove('stale');
 
   const requiredSheets = readRequiredSheets();
   if (requiredSheets === null) {
+    cuttingBusy = false;
     cuttingCalcBtn.disabled = false;
     cuttingData = null;
+    cuttingDownloadBtn.disabled = true;
     return;
   }
 
   const { papers, errors } = readPaperInputs();
   if (errors.length) {
     paperErrorEl.textContent = errors.join('；');
+    cuttingBusy = false;
     cuttingCalcBtn.disabled = false;
     cuttingData = null;
+    cuttingDownloadBtn.disabled = true;
     setCuttingStatus('纸张规格存在未填或非法项，已暂停裁切计算，请先修正后重新计算。', 'error');
     return;
   }
   if (papers.length === 0) {
+    cuttingBusy = false;
     cuttingCalcBtn.disabled = false;
     cuttingData = null;
+    cuttingDownloadBtn.disabled = true;
     setCuttingStatus('尚未维护任何纸张规格，请先在上方增加至少一种。', 'error');
     return;
   }
@@ -1726,8 +1767,10 @@ async function requestCutting(plan) {
       throw new Error(message);
     }
     const data = await resp.json();
-    if (req !== cuttingReqToken) return; // 已换稿或已发起新计算：丢弃旧结果
+    if (req !== cuttingReqToken) return; // 已换稿/输入已改/已发起新计算：丢弃旧结果
     cuttingData = data;
+    // 按当前输入重新计算成功：展示新方案并恢复下载
+    cuttingDownloadBtn.disabled = false;
     renderCuttingResult();
     if (cuttingData.feasible) {
       const rec = cuttingData.options.find((o) => o.index === cuttingData.recommended.index);
@@ -1743,9 +1786,12 @@ async function requestCutting(plan) {
     if (req !== cuttingReqToken) return; // 旧请求的失败不覆盖当前状态
     cuttingData = null;
     cuttingResultEl.hidden = true;
+    cuttingDownloadBtn.disabled = true;
     setCuttingStatus(err.message || '裁切计算失败', 'error');
   } finally {
+    // 仅最新一次计算清除在途标记并恢复入口；被作废请求的收尾不覆盖当前状态
     if (req === cuttingReqToken) {
+      cuttingBusy = false;
       cuttingCalcBtn.disabled = false;
     }
   }
